@@ -64,23 +64,35 @@ class AppViewModel(application: Application) : AndroidViewModel(application) {
     }
 
     fun startRecording() {
-        _processingState.update { ProcessingState.Recording }
-        audioRecorder.startRecording()
+        try {
+            audioRecorder.startRecording()
+            _processingState.update { ProcessingState.Recording }
+        } catch (e: Exception) {
+            _processingState.update {
+                ProcessingState.Failed(e.message ?: "Could not start recording", null)
+            }
+        }
     }
 
     fun stopRecordingAndProcess() {
         val rental = selectedRental ?: return
         _processingState.update { ProcessingState.Processing }
         viewModelScope.launch(Dispatchers.IO) {
-            val audioFile = audioRecorder.stopRecording()
-            lastAudioFile = audioFile
+            try {
+                val audioFile = audioRecorder.stopRecording()
+                lastAudioFile = audioFile
 
-            val today = SimpleDateFormat("yyyy-MM-dd", Locale.US).format(Date())
-            val recentContext = repository.recentContext(rental.id)
-            val prompt = GeminiPromptBuilder.buildPrompt(rental, recentContext, today)
-            lastPrompt = prompt
+                val today = SimpleDateFormat("yyyy-MM-dd", Locale.US).format(Date())
+                val recentContext = repository.recentContext(rental.id)
+                val prompt = GeminiPromptBuilder.buildPrompt(rental, recentContext, today)
+                lastPrompt = prompt
 
-            processWithGemini(audioFile, prompt)
+                processWithGemini(audioFile, prompt)
+            } catch (e: Exception) {
+                _processingState.update {
+                    ProcessingState.Failed(e.message ?: "Recording failed. Please try again.", null)
+                }
+            }
         }
     }
 
