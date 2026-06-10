@@ -40,11 +40,12 @@ class AudioRecorder(private val context: Context) {
     }
 
     fun stopRecording(): File {
-        recorder?.apply {
-            stop()
-            release()
+        try {
+            recorder?.stop()
+        } finally {
+            recorder?.release()
+            recorder = null
         }
-        recorder = null
         return outputFile ?: throw IllegalStateException("No active recording")
     }
 }
