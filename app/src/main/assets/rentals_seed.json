@@ -1,0 +1,32 @@
+[
+  {
+    "id": "F0-R1",
+    "label": "Ground Floor - Room 1",
+    "floor": 0,
+    "expected_rent": 5000,
+    "capacity": 2,
+    "rooms": "1 room + attached bath, no kitchen",
+    "electricity_responsibility": "tenant",
+    "security_deposit": 10000
+  },
+  {
+    "id": "F0-R2",
+    "label": "Ground Floor - Room 2",
+    "floor": 0,
+    "expected_rent": 4500,
+    "capacity": 1,
+    "rooms": "1 room + shared bath, no kitchen",
+    "electricity_responsibility": "tenant",
+    "security_deposit": 9000
+  },
+  {
+    "id": "F1-R1",
+    "label": "First Floor - Room 1",
+    "floor": 1,
+    "expected_rent": 7000,
+    "capacity": 3,
+    "rooms": "2 rooms + attached bath + kitchen",
+    "electricity_responsibility": "tenant",
+    "security_deposit": 14000
+  }
+]
