@@ -1,158 +1,240 @@
 package com.rentalmental.ui
 
 import android.app.Application
+import android.content.Intent
 import androidx.lifecycle.AndroidViewModel
 import androidx.lifecycle.viewModelScope
-import com.rentalmental.data.audio.AudioRecorder
-import com.rentalmental.data.gemini.GeminiClient
-import com.rentalmental.data.gemini.GeminiPromptBuilder
-import com.rentalmental.data.gemini.GeminiResponseParser
-import com.rentalmental.data.journal.JournalRepository
-import com.rentalmental.data.model.JournalEntry
-import com.rentalmental.data.model.Reminder
-import com.rentalmental.data.model.Rental
-import com.rentalmental.data.seed.SeedDataLoader
+import com.google.android.gms.auth.api.signin.GoogleSignIn
+import com.google.android.gms.auth.api.signin.GoogleSignInAccount
+import com.google.android.gms.common.api.ApiException
+import com.google.android.gms.tasks.Task
+import com.rentalmental.data.auth.GoogleAuthManager
+import com.rentalmental.data.model.Property
+import com.rentalmental.data.model.Room
+import com.rentalmental.data.sheets.SheetsClient
+import com.rentalmental.data.speech.SpeechRecognizerManager
+import com.rentalmental.data.store.PropertyStore
+import com.rentalmental.data.translation.TranslationManager
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.update
 import kotlinx.coroutines.launch
-import java.io.File
 import java.text.SimpleDateFormat
 import java.util.Date
 import java.util.Locale
+import java.util.UUID
 
 class AppViewModel(application: Application) : AndroidViewModel(application) {
 
-    private val repository = JournalRepository(File(application.filesDir, "journals"))
-    private val geminiClient = GeminiClient()
-    private val audioRecorder = AudioRecorder(application)
+    val authManager = GoogleAuthManager(application)
+    private val propertyStore = PropertyStore(application)
+    private val sheetsClient = SheetsClient(application)
+    private val speechManager = SpeechRecognizerManager(application)
+    private val translationManager = TranslationManager()
 
-    private val _rentals = MutableStateFlow<List<Rental>>(emptyList())
-    val rentals: StateFlow<List<Rental>> = _rentals
+    private val _isSignedIn = MutableStateFlow(authManager.isSignedIn(application))
+    val isSignedIn: StateFlow<Boolean> = _isSignedIn
 
-    private val _journalText = MutableStateFlow("")
-    val journalText: StateFlow<String> = _journalText
+    private val _authError = MutableStateFlow<String?>(null)
+    val authError: StateFlow<String?> = _authError
 
-    private val _processingState = MutableStateFlow<ProcessingState>(ProcessingState.Idle)
-    val processingState: StateFlow<ProcessingState> = _processingState
+    private val _properties = MutableStateFlow<List<Property>>(emptyList())
+    val properties: StateFlow<List<Property>> = _properties
 
-    var selectedRental: Rental? = null
+    private val _rooms = MutableStateFlow<List<Room>>(emptyList())
+    val rooms: StateFlow<List<Room>> = _rooms
+
+    private val _recognizedText = MutableStateFlow("")
+    val recognizedText: StateFlow<String> = _recognizedText
+
+    private val _isListening = MutableStateFlow(false)
+    val isListening: StateFlow<Boolean> = _isListening
+
+    private val _isSaving = MutableStateFlow(false)
+    val isSaving: StateFlow<Boolean> = _isSaving
+
+    private val _voiceError = MutableStateFlow<String?>(null)
+    val voiceError: StateFlow<String?> = _voiceError
+
+    private val _voiceSuccess = MutableStateFlow<String?>(null)
+    val voiceSuccess: StateFlow<String?> = _voiceSuccess
+
+    var selectedProperty: Property? = null
+        private set
+    var selectedRoom: Room? = null
         private set
 
-    private var lastAudioFile: File? = null
-    private var lastPrompt: String? = null
-
     init {
-        viewModelScope.launch(Dispatchers.IO) {
-            val loaded = SeedDataLoader.loadFromAssets(application)
-            repository.initializeIfNeeded(loaded)
-            _rentals.update { loaded }
-        }
-    }
-
-    fun selectRental(rentalId: String) {
-        selectedRental = _rentals.value.find { it.id == rentalId }
-        refreshJournal()
-    }
-
-    private fun refreshJournal() {
-        val rental = selectedRental ?: return
-        viewModelScope.launch(Dispatchers.IO) {
-            _journalText.update { repository.readJournal(rental.id) }
-        }
-    }
-
-    fun startRecording() {
-        try {
-            audioRecorder.startRecording()
-            _processingState.update { ProcessingState.Recording }
-        } catch (e: Exception) {
-            _processingState.update {
-                ProcessingState.Failed(e.message ?: "Could not start recording", null)
-            }
-        }
-    }
-
-    fun stopRecordingAndProcess() {
-        val rental = selectedRental ?: return
-        _processingState.update { ProcessingState.Processing }
+        loadProperties()
         viewModelScope.launch(Dispatchers.IO) {
             try {
-                val audioFile = audioRecorder.stopRecording()
-                lastAudioFile = audioFile
-
-                val today = SimpleDateFormat("yyyy-MM-dd", Locale.US).format(Date())
-                val recentContext = repository.recentContext(rental.id)
-                val prompt = GeminiPromptBuilder.buildPrompt(rental, recentContext, today)
-                lastPrompt = prompt
-
-                processWithGemini(audioFile, prompt)
-            } catch (e: Exception) {
-                _processingState.update {
-                    ProcessingState.Failed(e.message ?: "Recording failed. Please try again.", null)
-                }
-            }
+                translationManager.ensureModelDownloaded()
+            } catch (_: Exception) { }
         }
     }
 
-    fun retryProcessing() {
-        val audioFile = lastAudioFile
-        val prompt = lastPrompt
-        if (audioFile == null || prompt == null) {
-            _processingState.update { ProcessingState.Idle }
-            return
-        }
-        _processingState.update { ProcessingState.Processing }
-        viewModelScope.launch(Dispatchers.IO) {
-            processWithGemini(audioFile, prompt)
-        }
-    }
+    fun getSignInIntent(): Intent = authManager.getSignInIntent()
 
-    private fun processWithGemini(audioFile: File, prompt: String) {
+    fun handleSignInResult(task: Task<GoogleSignInAccount>) {
         try {
-            val rawResponse = geminiClient.transcribeAndExtract(audioFile, prompt)
-            val extraction = GeminiResponseParser.parse(rawResponse)
-
-            if (extraction == null) {
-                _processingState.update {
-                    ProcessingState.Failed(
-                        "Could not understand the response. Please fill in details manually.",
-                        rawResponse
-                    )
-                }
-            } else {
-                val now = Date()
-                val draft = JournalEntry(
-                    date = SimpleDateFormat("yyyy-MM-dd", Locale.US).format(now),
-                    time = SimpleDateFormat("HH:mm", Locale.US).format(now),
-                    type = extraction.entryType,
-                    person = extraction.person,
-                    amount = extraction.amount,
-                    paymentMethod = extraction.paymentMethod,
-                    summary = extraction.summary,
-                    rawTranscription = extraction.transcription
-                )
-                _processingState.update { ProcessingState.ReadyForReview(draft, extraction.reminder) }
-            }
-        } catch (e: Exception) {
-            _processingState.update { ProcessingState.Failed(e.message ?: "Unknown error", null) }
+            task.getResult(ApiException::class.java)
+            _isSignedIn.update { true }
+            _authError.update { null }
+        } catch (e: ApiException) {
+            _authError.update { "Sign-in failed: ${e.statusCode}" }
         }
     }
 
-    fun confirmEntry(entry: JournalEntry, reminder: Reminder?) {
-        val rental = selectedRental ?: return
+    private fun loadProperties() {
+        _properties.update { propertyStore.getProperties() }
+    }
+
+    fun addProperty(name: String, address: String) {
+        val account = authManager.getAccount(getApplication()) ?: return
         viewModelScope.launch(Dispatchers.IO) {
-            repository.appendEntry(rental.id, entry)
-            if (reminder != null) {
-                repository.appendReminderToJournal(rental.id, reminder)
+            try {
+                val spreadsheetId = sheetsClient.createSpreadsheet(account.email!!, "RentalMental - $name")
+                val property = Property(
+                    id = UUID.randomUUID().toString(),
+                    name = name,
+                    address = address,
+                    spreadsheetId = spreadsheetId
+                )
+                propertyStore.addProperty(property)
+                loadProperties()
+            } catch (e: Exception) {
+                _authError.update { "Failed to create spreadsheet: ${e.message}" }
             }
-            refreshJournal()
-            _processingState.update { ProcessingState.Idle }
         }
     }
 
-    fun discard() {
-        _processingState.update { ProcessingState.Idle }
+    fun editProperty(property: Property) {
+        propertyStore.updateProperty(property)
+        loadProperties()
+    }
+
+    fun deleteProperty(property: Property) {
+        propertyStore.deleteProperty(property.id)
+        loadProperties()
+    }
+
+    fun selectProperty(property: Property) {
+        selectedProperty = property
+        _rooms.update { propertyStore.getRooms(property.id) }
+    }
+
+    fun addRoom(room: Room) {
+        val property = selectedProperty ?: return
+        val spreadsheetId = property.spreadsheetId ?: return
+        val account = authManager.getAccount(getApplication()) ?: return
+
+        propertyStore.addRoom(room)
+        _rooms.update { propertyStore.getRooms(property.id) }
+
+        viewModelScope.launch(Dispatchers.IO) {
+            try {
+                sheetsClient.addSheet(account.email!!, spreadsheetId, room.label)
+            } catch (e: Exception) {
+                _voiceError.update { "Room saved locally but sheet tab creation failed: ${e.message}" }
+            }
+        }
+    }
+
+    fun editRoom(room: Room) {
+        val oldRoom = propertyStore.getRooms(room.propertyId).find { it.id == room.id }
+        propertyStore.updateRoom(room)
+        _rooms.update { propertyStore.getRooms(room.propertyId) }
+
+        if (oldRoom != null && oldRoom.label != room.label) {
+            val property = selectedProperty ?: return
+            val spreadsheetId = property.spreadsheetId ?: return
+            val account = authManager.getAccount(getApplication()) ?: return
+            viewModelScope.launch(Dispatchers.IO) {
+                try {
+                    sheetsClient.renameSheet(account.email!!, spreadsheetId, oldRoom.label, room.label)
+                } catch (e: Exception) {
+                    _voiceError.update { "Room renamed locally but sheet rename failed: ${e.message}" }
+                }
+            }
+        }
+    }
+
+    fun deleteRoom(room: Room) {
+        propertyStore.deleteRoom(room)
+        _rooms.update { propertyStore.getRooms(room.propertyId) }
+    }
+
+    fun selectRoom(room: Room) {
+        selectedRoom = room
+        _recognizedText.update { "" }
+        _voiceError.update { null }
+        _voiceSuccess.update { null }
+    }
+
+    fun updateRecognizedText(text: String) {
+        _recognizedText.update { text }
+    }
+
+    fun startListening() {
+        _voiceError.update { null }
+        _voiceSuccess.update { null }
+        _isListening.update { true }
+
+        speechManager.startListening(
+            onPartialResult = { text -> _recognizedText.update { text } },
+            onFinalResult = { text ->
+                _recognizedText.update { text }
+                _isListening.update { false }
+            },
+            onError = { message ->
+                _voiceError.update { message }
+                _isListening.update { false }
+            }
+        )
+    }
+
+    fun stopListening() {
+        speechManager.stop()
+        _isListening.update { false }
+    }
+
+    fun saveEntry() {
+        val property = selectedProperty ?: return
+        val room = selectedRoom ?: return
+        val spreadsheetId = property.spreadsheetId ?: return
+        val account = authManager.getAccount(getApplication()) ?: return
+        val hindiText = _recognizedText.value
+        if (hindiText.isBlank()) return
+
+        _isSaving.update { true }
+        _voiceError.update { null }
+        _voiceSuccess.update { null }
+
+        viewModelScope.launch(Dispatchers.IO) {
+            try {
+                val englishText = try {
+                    translationManager.translate(hindiText)
+                } catch (_: Exception) {
+                    "(translation unavailable)"
+                }
+
+                val dateTime = SimpleDateFormat("yyyy-MM-dd HH:mm:ss", Locale.US).format(Date())
+                sheetsClient.insertRow(account.email!!, spreadsheetId, room.label, dateTime, hindiText, englishText)
+
+                _voiceSuccess.update { "Entry saved!" }
+                _recognizedText.update { "" }
+            } catch (e: Exception) {
+                _voiceError.update { "Save failed: ${e.message}" }
+            } finally {
+                _isSaving.update { false }
+            }
+        }
+    }
+
+    override fun onCleared() {
+        super.onCleared()
+        speechManager.stop()
+        translationManager.close()
     }
 }
