@@ -1,5 +1,6 @@
-# Feature: Voice-to-Journal Android Prototype
+# Feature: Voice-to-Journal Android Prototype (SUPERSEDED)
 
+**Status:** Superseded by Google Sheets pivot — see `context/feature-google-sheets-pivot.md`
 **Branch:** voice-to-journal-prototype
 **Spec:** docs/superpowers/specs/2026-06-10-voice-to-journal-prototype-design.md
 **Plan:** docs/superpowers/plans/2026-06-10-voice-to-journal-prototype.md
