@@ -151,6 +151,35 @@ class SheetsClient(private val context: Context) {
         valueResponse.close()
     }
 
+    data class RowEntry(val dateTime: String, val hindiText: String, val englishText: String)
+
+    fun readRows(accountName: String, spreadsheetId: String, sheetName: String, startRow: Int, count: Int): List<RowEntry> {
+        val token = getAccessToken(accountName)
+        val endRow = startRow + count - 1
+        val request = Request.Builder()
+            .url("https://sheets.googleapis.com/v4/spreadsheets/$spreadsheetId/values/'${sheetName}'!A${startRow}:C${endRow}")
+            .addHeader("Authorization", "Bearer $token")
+            .get()
+            .build()
+        val response = httpClient.newCall(request).execute()
+        val body = response.body?.string() ?: return emptyList()
+        if (!response.isSuccessful) return emptyList()
+
+        val json = JSONObject(body)
+        val values = json.optJSONArray("values") ?: return emptyList()
+        val result = mutableListOf<RowEntry>()
+        for (i in 0 until values.length()) {
+            val row = values.getJSONArray(i)
+            val dt = if (row.length() > 0) row.optString(0, "") else ""
+            val hi = if (row.length() > 1) row.optString(1, "") else ""
+            val en = if (row.length() > 2) row.optString(2, "") else ""
+            if (dt.isNotBlank() || hi.isNotBlank()) {
+                result.add(RowEntry(dt, hi, en))
+            }
+        }
+        return result
+    }
+
     fun renameSheet(accountName: String, spreadsheetId: String, oldName: String, newName: String) {
         val token = getAccessToken(accountName)
         val sheetId = getSheetId(token, spreadsheetId, oldName)
@@ -174,6 +203,29 @@ class SheetsClient(private val context: Context) {
         if (!response.isSuccessful) {
             val err = response.body?.string() ?: ""
             throw Exception("Failed to rename sheet: $err")
+        }
+        response.close()
+    }
+
+    fun deleteSheet(accountName: String, spreadsheetId: String, sheetName: String) {
+        val token = getAccessToken(accountName)
+        val sheetId = getSheetId(token, spreadsheetId, sheetName)
+        val body = JSONObject().apply {
+            put("requests", JSONArray().put(JSONObject().apply {
+                put("deleteSheet", JSONObject().apply {
+                    put("sheetId", sheetId)
+                })
+            }))
+        }
+        val request = Request.Builder()
+            .url("https://sheets.googleapis.com/v4/spreadsheets/$spreadsheetId:batchUpdate")
+            .addHeader("Authorization", "Bearer $token")
+            .post(body.toString().toRequestBody(jsonMediaType))
+            .build()
+        val response = httpClient.newCall(request).execute()
+        if (!response.isSuccessful) {
+            val err = response.body?.string() ?: ""
+            throw Exception("Failed to delete sheet: $err")
         }
         response.close()
     }

@@ -60,6 +60,18 @@ class AppViewModel(application: Application) : AndroidViewModel(application) {
     private val _voiceSuccess = MutableStateFlow<String?>(null)
     val voiceSuccess: StateFlow<String?> = _voiceSuccess
 
+    private val _history = MutableStateFlow<List<SheetsClient.RowEntry>>(emptyList())
+    val history: StateFlow<List<SheetsClient.RowEntry>> = _history
+
+    private val _isLoadingHistory = MutableStateFlow(false)
+    val isLoadingHistory: StateFlow<Boolean> = _isLoadingHistory
+
+    private val _hasMoreHistory = MutableStateFlow(false)
+    val hasMoreHistory: StateFlow<Boolean> = _hasMoreHistory
+
+    private var historyPageSize = 10
+    private var historyLoaded = 0
+
     var selectedProperty: Property? = null
         private set
     var selectedRoom: Room? = null
@@ -163,6 +175,15 @@ class AppViewModel(application: Application) : AndroidViewModel(application) {
     fun deleteRoom(room: Room) {
         propertyStore.deleteRoom(room)
         _rooms.update { propertyStore.getRooms(room.propertyId) }
+
+        val property = selectedProperty ?: return
+        val spreadsheetId = property.spreadsheetId ?: return
+        val account = authManager.getAccount(getApplication()) ?: return
+        viewModelScope.launch(Dispatchers.IO) {
+            try {
+                sheetsClient.deleteSheet(account.email!!, spreadsheetId, room.label)
+            } catch (_: Exception) { }
+        }
     }
 
     fun selectRoom(room: Room) {
@@ -170,6 +191,34 @@ class AppViewModel(application: Application) : AndroidViewModel(application) {
         _recognizedText.update { "" }
         _voiceError.update { null }
         _voiceSuccess.update { null }
+        _history.update { emptyList() }
+        historyLoaded = 0
+        loadHistory()
+    }
+
+    private fun loadHistory() {
+        val property = selectedProperty ?: return
+        val room = selectedRoom ?: return
+        val spreadsheetId = property.spreadsheetId ?: return
+        val account = authManager.getAccount(getApplication()) ?: return
+
+        _isLoadingHistory.update { true }
+        viewModelScope.launch(Dispatchers.IO) {
+            try {
+                val startRow = 2 + historyLoaded
+                val rows = sheetsClient.readRows(account.email!!, spreadsheetId, room.label, startRow, historyPageSize + 1)
+                val hasMore = rows.size > historyPageSize
+                val pageRows = if (hasMore) rows.dropLast(1) else rows
+                historyLoaded += pageRows.size
+                _history.update { current -> current + pageRows }
+                _hasMoreHistory.update { hasMore }
+            } catch (_: Exception) { }
+            _isLoadingHistory.update { false }
+        }
+    }
+
+    fun loadMoreHistory() {
+        loadHistory()
     }
 
     fun updateRecognizedText(text: String) {
@@ -224,6 +273,9 @@ class AppViewModel(application: Application) : AndroidViewModel(application) {
 
                 _voiceSuccess.update { "Entry saved!" }
                 _recognizedText.update { "" }
+                _history.update { emptyList() }
+                historyLoaded = 0
+                loadHistory()
             } catch (e: Exception) {
                 _voiceError.update { "Save failed: ${e.message}" }
             } finally {

@@ -31,6 +31,9 @@ fun AppNavigation() {
     val isSaving by viewModel.isSaving.collectAsState()
     val voiceError by viewModel.voiceError.collectAsState()
     val voiceSuccess by viewModel.voiceSuccess.collectAsState()
+    val history by viewModel.history.collectAsState()
+    val isLoadingHistory by viewModel.isLoadingHistory.collectAsState()
+    val hasMoreHistory by viewModel.hasMoreHistory.collectAsState()
 
     val signInLauncher = rememberLauncherForActivityResult(
         contract = ActivityResultContracts.StartActivityForResult()
@@ -92,10 +95,14 @@ fun AppNavigation() {
                 isSaving = isSaving,
                 errorMessage = voiceError,
                 successMessage = voiceSuccess,
+                history = history,
+                isLoadingHistory = isLoadingHistory,
+                hasMoreHistory = hasMoreHistory,
                 onTextChanged = { viewModel.updateRecognizedText(it) },
                 onStartListening = { viewModel.startListening() },
                 onStopListening = { viewModel.stopListening() },
                 onSave = { viewModel.saveEntry() },
+                onLoadMore = { viewModel.loadMoreHistory() },
                 onBack = { navController.popBackStack() }
             )
         }
